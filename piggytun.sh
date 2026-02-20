@@ -23,9 +23,67 @@ install_haproxy() {
   fi
 }
 
+optimize_system() {
+
+echo "Applying optimization..."
+
+cp -f "$CFG" "${CFG}.bak.$(date +%s)" 2>/dev/null || true
+
+cat > /etc/haproxy/haproxy.cfg <<'EOF'
+global
+    daemon
+    maxconn 500000
+    nbthread 2
+    cpu-map auto:1/1-2 0-1
+    tune.bufsize 32768
+    tune.maxrewrite 4096
+    tune.rcvbuf.client 262144
+    tune.rcvbuf.server 262144
+    tune.sndbuf.client 262144
+    tune.sndbuf.server 262144
+
+defaults
+    mode tcp
+    option tcplog
+    timeout connect 5s
+    timeout client 1h
+    timeout server 1h
+    timeout tunnel 1h
+
+# KEEP YOUR EXISTING FRONTENDS AND BACKENDS BELOW THIS LINE
+EOF
+
+grep -q "PIGGYTUN OPTIMIZATION" /etc/sysctl.conf || cat >> /etc/sysctl.conf <<'EOF'
+
+# PIGGYTUN OPTIMIZATION
+net.core.rmem_max = 67108864
+net.core.wmem_max = 67108864
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
+net.ipv4.tcp_rmem = 4096 262144 67108864
+net.ipv4.tcp_wmem = 4096 262144 67108864
+net.ipv4.tcp_window_scaling = 1
+net.ipv4.tcp_congestion_control = bbr
+net.core.netdev_max_backlog = 250000
+net.core.default_qdisc = fq
+
+EOF
+
+sysctl -p
+
+if [[ -f "$CFG" ]]; then
+    sed -i 's/bind \*/bind * reuseport/g' "$CFG"
+fi
+
+systemctl daemon-reexec
+systemctl restart haproxy
+systemctl enable haproxy >/dev/null 2>&1 || true
+
+echo "Optimization applied successfully"
+}
+
 init_cfg_if_needed() {
   if [[ ! -f "$CFG" ]] || ! grep -q "$MARK GLOBAL" "$CFG"; then
-    echo "Creating base config..."
     cat > "$CFG" <<EOF
 global
     daemon
@@ -67,7 +125,7 @@ cat >> "$CFG" <<EOF
 $MARK START $id
 
 frontend main_$id
-    bind *:$main_port
+    bind *:$main_port reuseport
     default_backend balance_$id
 
 backend balance_$id
@@ -85,7 +143,7 @@ p=$((range_start+i))
 cat >> "$CFG" <<EOF
 
 frontend f${p}_$id
-    bind *:$p
+    bind *:$p reuseport
     default_backend b${p}_$id
 
 backend b${p}_$id
@@ -120,7 +178,7 @@ p=$((range_start+i))
 cat >> "$CFG" <<EOF
 
 frontend f${p}_$id
-    bind *:$p
+    bind *:$p reuseport
     default_backend b${p}_$id
 
 backend b${p}_$id
@@ -137,9 +195,7 @@ echo "Tunnel added: $id"
 }
 
 list_tunnels() {
-
 grep "$MARK START" "$CFG" | nl
-
 }
 
 remove_tunnel() {
@@ -149,11 +205,6 @@ list_tunnels
 num=$(ask "Enter number to remove")
 
 id=$(grep "$MARK START" "$CFG" | sed -n "${num}p" | awk '{print $4}')
-
-if [[ -z "$id" ]]; then
-  echo "Invalid"
-  exit 1
-fi
 
 sed -i "/$MARK START $id/,/$MARK END $id/d" "$CFG"
 
@@ -165,117 +216,68 @@ echo "Removed: $id"
 remove_all() {
 
 systemctl stop haproxy || true
-
 rm -f "$CFG"
 
 read -rp "Remove haproxy package too? (y/n): " r
 
 if [[ "$r" == "y" ]]; then
-
-  if command -v apt >/dev/null; then
-    apt purge -y haproxy
-    apt autoremove -y
-  elif command -v yum >/dev/null; then
-    yum remove -y haproxy
-  elif command -v dnf >/dev/null; then
-    dnf remove -y haproxy
-  fi
-
+  apt purge -y haproxy 2>/dev/null || yum remove -y haproxy 2>/dev/null || dnf remove -y haproxy 2>/dev/null
 fi
 
 echo "All removed"
-
 exit 0
 }
 
 iran_menu() {
 
 while true; do
-
 echo
 echo "IRAN MENU"
 echo "1) Install HAProxy"
 echo "2) Add Tunnel"
 echo "3) List Tunnels"
 echo "4) Remove Tunnel"
-echo "5) Back"
+echo "5) Optimize"
+echo "6) Back"
 
 c=$(ask "Choice")
 
 case $c in
-
-1)
-install_haproxy
-init_cfg_if_needed
-;;
-
-2)
-install_haproxy
-init_cfg_if_needed
-add_tunnel_iran
-;;
-
-3)
-list_tunnels
-;;
-
-4)
-remove_tunnel
-;;
-
-5)
-break
-;;
-
+1) install_haproxy; init_cfg_if_needed ;;
+2) install_haproxy; init_cfg_if_needed; add_tunnel_iran ;;
+3) list_tunnels ;;
+4) remove_tunnel ;;
+5) optimize_system ;;
+6) break ;;
 esac
 
 done
-
 }
 
 kharej_menu() {
 
 while true; do
-
 echo
 echo "KHAREJ MENU"
 echo "1) Install HAProxy"
 echo "2) Add Tunnel"
 echo "3) List Tunnels"
 echo "4) Remove Tunnel"
-echo "5) Back"
+echo "5) Optimize"
+echo "6) Back"
 
 c=$(ask "Choice")
 
 case $c in
-
-1)
-install_haproxy
-init_cfg_if_needed
-;;
-
-2)
-install_haproxy
-init_cfg_if_needed
-add_tunnel_kharej
-;;
-
-3)
-list_tunnels
-;;
-
-4)
-remove_tunnel
-;;
-
-5)
-break
-;;
-
+1) install_haproxy; init_cfg_if_needed ;;
+2) install_haproxy; init_cfg_if_needed; add_tunnel_kharej ;;
+3) list_tunnels ;;
+4) remove_tunnel ;;
+5) optimize_system ;;
+6) break ;;
 esac
 
 done
-
 }
 
 echo
@@ -287,23 +289,10 @@ echo "3) REMOVE ALL"
 main=$(ask "Select")
 
 case $main in
-
-1)
-iran_menu
-;;
-
-2)
-kharej_menu
-;;
-
-3)
-remove_all
-;;
-
-*)
-echo "Invalid"
-;;
-
+1) iran_menu ;;
+2) kharej_menu ;;
+3) remove_all ;;
+*) echo "Invalid" ;;
 esac
 
 echo "Done"
